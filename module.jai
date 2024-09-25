@@ -85,7 +85,7 @@ parallel_for :: (start: int, end_exclusive: int, $callback: (i: int, thread: int
 
 parallel_for :: (start: int, end_exclusive: int, $callback: (i: int, thread: int, data: $T), data: T, thread_count: int = 0) {
     #if SINGLE_THREAD {
-        for i: start..end_exclusive - 1 {
+        for i: start..end_exclusive {
             callback(i, 0, data);
         }
         return;
