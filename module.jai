@@ -28,7 +28,7 @@ parallel_init :: () {
     init(*pause_semaphore);
 }
 
-parallel_for :: (start: int, end_exclusive: int, $callback: (i: int, thread: int), thread_count: int = 0) {
+parallel_for :: (start: int, end_exclusive: int, $callback: (i: int, thread: int), thread_count: int = 0, $copy_context: bool = true) {
     #if SINGLE_THREAD {
         for i: start..end_exclusive - 1 {
             callback(i, 0, data);
@@ -47,6 +47,9 @@ parallel_for :: (start: int, end_exclusive: int, $callback: (i: int, thread: int
     // stack stuff is fine because this function waits for the threads to finish before proceeding
     baked_callback :: (thread: *Thread) {
         thread_data: *ThreadData = cast(*ThreadData) thread.data;
+        #if copy_context {
+            copy_context_additions(thread_data.parent_context);
+        }
 
         start_index := thread_data.start_index;
         end_index_exclusive := thread_data.end_index_exclusive;
@@ -72,6 +75,7 @@ parallel_for :: (start: int, end_exclusive: int, $callback: (i: int, thread: int
         thread_data.start_index = start_index;
         thread_data.end_index_exclusive = end_index_exclusive;
         thread_data.requested_thread_count = thread_count;
+        thread_data.parent_context = context;
 
         signal(*thread_data.run_semaphore);
 
@@ -83,7 +87,7 @@ parallel_for :: (start: int, end_exclusive: int, $callback: (i: int, thread: int
     wait_for(*pause_semaphore);
 }
 
-parallel_for :: (start: int, end_exclusive: int, $callback: (i: int, thread: int, data: $T), data: T, thread_count: int = 0) {
+parallel_for :: (start: int, end_exclusive: int, $callback: (i: int, thread: int, data: $T), data: T, thread_count: int = 0, $copy_context: bool = true) {
     #if SINGLE_THREAD {
         for i: start..end_exclusive {
             callback(i, 0, data);
@@ -102,6 +106,9 @@ parallel_for :: (start: int, end_exclusive: int, $callback: (i: int, thread: int
     // stack stuff is fine because this function waits for the threads to finish before proceeding
     baked_callback :: (thread: *Thread) {
         thread_data: *ThreadData = cast(*ThreadData) thread.data;
+        #if copy_context {
+            copy_context_additions(thread_data.parent_context);
+        }
 
         start_index := thread_data.start_index;
         end_index_exclusive := thread_data.end_index_exclusive;
@@ -129,6 +136,7 @@ parallel_for :: (start: int, end_exclusive: int, $callback: (i: int, thread: int
         thread_data.start_index = start_index;
         thread_data.end_index_exclusive = end_index_exclusive;
         thread_data.requested_thread_count = thread_count;
+        thread_data.parent_context = context;
         thread_data.data = *data;
 
         signal(*thread_data.run_semaphore);
@@ -145,7 +153,7 @@ get_thread_count :: () -> int {
     #if SINGLE_THREAD {
         return 1;
     }
-    
+
     if !threads_initialized {
         parallel_init();
     }
@@ -200,6 +208,7 @@ ThreadData :: struct {
     start_index: int;
     end_index_exclusive: int;
     requested_thread_count: int;
+    parent_context: #Context;
     data: *void;
 }
 
@@ -220,7 +229,7 @@ thread_callback :: (thread: *Thread) -> s64 {
             // }
 
             reset_temporary_storage();
-            
+
             old_finished_count := atomic_add(*finished_count, 1);
             if old_finished_count == thread_data.requested_thread_count - 1 {
                 signal(*pause_semaphore);
@@ -229,6 +238,29 @@ thread_callback :: (thread: *Thread) -> s64 {
     }
 
     return 0;
+}
+
+copy_context_additions :: (parent: #Context) {
+    copy_context_additions(*context, parent);
+}
+
+copy_context_additions :: (current: *#Context, parent: #Context) {
+    info := parent.context_info;
+
+    context_ptr := cast(*u8) current;
+    parent_ptr := cast(*u8) *parent;
+
+    for member: info.members {
+        if member.name == "base" {
+            assert(member.offset_in_bytes == 0, "Found base context not where expected.\n");
+            base_runtime_size := member.type.runtime_size;
+
+            memcpy(context_ptr + base_runtime_size, parent_ptr + base_runtime_size, info.runtime_size - base_runtime_size);
+            return;
+        }
+    }
+
+    assert(false, "Could not find base context to start the context copy.\n");
 }
 
 thread_count: int;
