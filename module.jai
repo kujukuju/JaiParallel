@@ -1,5 +1,5 @@
 
-#module_parameters(WASM := false);
+#module_parameters(DEFAULT_CONTEXT_COPY_NAMES: [$N] string = .[]);
 
 parallel_init :: () {
     if threads_initialized {
@@ -7,11 +7,7 @@ parallel_init :: () {
     }
     threads_initialized = true;
 
-    #if WASM {
-        thread_count = 16;
-    } else {
-        thread_count = get_number_of_processors();
-    }
+    thread_count = get_number_of_processors();
     threads = NewArray(thread_count, Thread);
 
     for i: 0..threads.count - 1 {
@@ -28,7 +24,7 @@ parallel_init :: () {
     init(*pause_semaphore);
 }
 
-parallel_for :: (start: int, end_exclusive: int, $callback: (i: int, thread: int), thread_count: int = 0, $copy_context: bool = true) {
+parallel_for :: (start: int, end_exclusive: int, $callback: (i: int, thread: int), thread_count: int = 0, $context_copy_names: [] string = .[]) {
     #if SINGLE_THREAD {
         for i: start..end_exclusive - 1 {
             callback(i, 0, data);
@@ -47,8 +43,8 @@ parallel_for :: (start: int, end_exclusive: int, $callback: (i: int, thread: int
     // stack stuff is fine because this function waits for the threads to finish before proceeding
     baked_callback :: (thread: *Thread) {
         thread_data: *ThreadData = cast(*ThreadData) thread.data;
-        #if copy_context {
-            copy_context_additions(thread_data.parent_context);
+        #if context_copy_names.count > 0 {
+            copy_context_additions(thread_data.parent_context, context_copy_names);
         }
 
         start_index := thread_data.start_index;
@@ -87,7 +83,7 @@ parallel_for :: (start: int, end_exclusive: int, $callback: (i: int, thread: int
     wait_for(*pause_semaphore);
 }
 
-parallel_for :: (start: int, end_exclusive: int, $callback: (i: int, thread: int, data: $T), data: T, thread_count: int = 0, $copy_context: bool = true) {
+parallel_for :: (start: int, end_exclusive: int, $callback: (i: int, thread: int, data: $T), data: T, thread_count: int = 0, $context_copy_names: [] string = .[]) {
     #if SINGLE_THREAD {
         for i: start..end_exclusive {
             callback(i, 0, data);
@@ -106,8 +102,8 @@ parallel_for :: (start: int, end_exclusive: int, $callback: (i: int, thread: int
     // stack stuff is fine because this function waits for the threads to finish before proceeding
     baked_callback :: (thread: *Thread) {
         thread_data: *ThreadData = cast(*ThreadData) thread.data;
-        #if copy_context {
-            copy_context_additions(thread_data.parent_context);
+        #if context_copy_names.count > 0 {
+            copy_context_additions(thread_data.parent_context, context_copy_names);
         }
 
         start_index := thread_data.start_index;
@@ -240,27 +236,26 @@ thread_callback :: (thread: *Thread) -> s64 {
     return 0;
 }
 
-copy_context_additions :: (parent: #Context) {
-    copy_context_additions(*context, parent);
+// if you copy context you must poke this name yourself because
+// it's very important that we don't copy everything non-base in the context
+// as default modules will add some thread specific things themselves
+// so you must only copy_context_additions for whitelisted names
+
+copy_context_additions :: (parent: #Context, $context_whitelist: [] string = DEFAULT_CONTEXT_COPY_NAMES) {
+    copy_context_additions(*context, parent, context_whitelist);
 }
 
-copy_context_additions :: (current: *#Context, parent: #Context) {
+copy_context_additions :: (current: *#Context, parent: #Context, $context_whitelist: [] string = DEFAULT_CONTEXT_COPY_NAMES) {
     info := parent.context_info;
 
     context_ptr := cast(*u8) current;
     parent_ptr := cast(*u8) *parent;
 
     for member: info.members {
-        if member.name == "base" {
-            assert(member.offset_in_bytes == 0, "Found base context not where expected.\n");
-            base_runtime_size := member.type.runtime_size;
-
-            memcpy(context_ptr + base_runtime_size, parent_ptr + base_runtime_size, info.runtime_size - base_runtime_size);
-            return;
+        if array_find(context_whitelist, member.name) {
+            memcpy(context_ptr + member.offset_in_bytes, parent_ptr + member.offset_in_bytes, member.type.runtime_size);
         }
     }
-
-    assert(false, "Could not find base context to start the context copy.\n");
 }
 
 thread_count: int;
